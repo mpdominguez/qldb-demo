@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  QLDBLedger: 
+    Type: "AWS::QLDB::Ledger"
+    Properties:
+      DeletionProtection: false
+      Name: "qldb-demo"
+      PermissionsMode: "ALLOW_ALL"
+      Tags:
+        - Key: Name
+          Value: qldbdemo
+
+  QLDBLambdaLayer:
+    Type: "AWS::Lambda::LayerVersion"
+    Properties:
+      CompatibleRuntimes: 
+        - python3.6
+        - python3.7
+      Content: 
+        S3Bucket: mrtdomshare
+        S3Key: qldbdemo/qldblayer.zip
+      Description: QLDB Lambda layer
+      LayerName: qldb-layer
+      LicenseInfo: MIT
+
+  lambdaQLDBCreateTable:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: lambdaQLDBCreateTable
+      Description: Lambda QLDB Create Table transactions
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.6
+      Layers:
+        - !Ref QLDBLambdaLayer 
+      Role: !GetAtt LambdaBasicExecutionRole.Arn
+      Code:
+        S3Bucket: mrtdomshare
+        S3Key: qldbdemo/lambdaQLDBCreateTable.zip
+      Environment:
+        Variables:
+          QLDBLedger : !Ref QLDBLedger
+
+  lambdaQLDBInsert:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: lambdaQLDBInsert
+      Description: Lambda QLDB Insert
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.6
+      Layers:
+        - !Ref QLDBLambdaLayer 
+      Role: !GetAtt LambdaBasicExecutionRole.Arn
+      Code:
+        S3Bucket: mrtdomshare
+        S3Key: qldbdemo/lambdaQLDBInsert.zip
+      Environment:
+        Variables:
+          QLDBLedger : !Ref QLDBLedger
+
+  LambdaBasicExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - 'arn:aws:iam::aws:policy/AmazonQLDBFullAccess'
+
+  apiGateway:
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Name: "QLDBRestAPI"
+      Description: "QLDB Rest API"
+
+  apiGatewayRootMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: "NONE"
+      HttpMethod: "POST"
+      Integration:
+        IntegrationHttpMethod: "POST"
+        IntegrationResponses:
+          - StatusCode: 200
+        Type: "AWS"
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt "lambdaQLDBInsert.Arn"
+      ResourceId: !GetAtt "apiGateway.RootResourceId"
+      RestApiId: !Ref "apiGateway"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: 'Empty'
+
+  apiGatewayDeployment:
+    Type: "AWS::ApiGateway::Deployment"
+    DependsOn:
+      - "apiGatewayRootMethod"
+    Properties:
+      RestApiId: !Ref "apiGateway"
+      StageName: "Production"
+
+  lambdaApiGatewayInvoke:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt "lambdaQLDBInsert.Arn"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${apiGateway}/*/POST/"
+
+Outputs:
+  apiGatewayInvokeURL:
+    Value: !Sub "https://${apiGateway}.execute-api.${AWS::Region}.amazonaws.com/Production"
